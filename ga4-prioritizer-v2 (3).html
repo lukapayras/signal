@@ -1,0 +1,1399 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GA4 Page Prioritizer</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Syne:wght@400;500;700;800&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg: #f5f6f8;
+  --surface: #ffffff;
+  --surface2: #f0f1f4;
+  --border: rgba(0,0,0,0.08);
+  --border2: rgba(0,0,0,0.15);
+  --text: #1a1a2e;
+  --muted: #8b8d9a;
+  --muted2: #5f6177;
+  --accent: #4f46e5;
+  --accent-dim: rgba(79,70,229,0.08);
+  --red: #e5484d;
+  --red-dim: rgba(229,72,77,0.08);
+  --amber: #e5930b;
+  --amber-dim: rgba(229,147,11,0.08);
+  --blue: #3b82f6;
+  --blue-dim: rgba(59,130,246,0.08);
+  --green: #16a34a;
+  --green-dim: rgba(22,163,74,0.08);
+  --purple: #8b5cf6;
+  --radius: 10px;
+  --font-display: 'Syne', sans-serif;
+  --font-mono: 'DM Mono', monospace;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html { font-size: 15px; }
+body { background: var(--bg); color: var(--text); font-family: var(--font-display); min-height: 100vh; }
+
+/* ── LAYOUT ── */
+.shell { display: grid; grid-template-rows: auto 1fr; min-height: 100vh; }
+header { border-bottom: 1px solid var(--border); padding: 0 2rem; display: flex; align-items: center; justify-content: space-between; height: 60px; background: var(--surface); }
+.logo { font-size: 1rem; font-weight: 800; letter-spacing: -.02em; }
+.logo span { color: var(--accent); }
+.header-meta { font-family: var(--font-mono); font-size: .7rem; color: var(--muted); }
+main { padding: 2rem; max-width: 1400px; margin: 0 auto; width: 100%; }
+
+/* ── DROP ZONE ── */
+#drop-screen { display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: calc(100vh - 60px); gap: 2rem; }
+.drop-card {
+  border: 1.5px dashed var(--border2);
+  border-radius: 20px;
+  padding: 3.5rem 4rem;
+  text-align: center;
+  width: 100%;
+  max-width: 560px;
+  cursor: pointer;
+  transition: border-color .2s, background .2s;
+  position: relative;
+}
+.drop-card:hover, .drop-card.dragging { border-color: var(--accent); background: var(--accent-dim); }
+.drop-icon { font-size: 2.5rem; margin-bottom: 1rem; }
+.drop-title { font-size: 1.4rem; font-weight: 700; margin-bottom: .5rem; }
+.drop-sub { color: var(--muted2); font-size: .85rem; line-height: 1.6; }
+.drop-formats { display: flex; gap: .5rem; justify-content: center; margin-top: 1.25rem; }
+.pill { font-family: var(--font-mono); font-size: .65rem; padding: 3px 9px; border-radius: 20px; border: 1px solid var(--border2); color: var(--muted2); }
+.pill.accent { border-color: var(--accent); color: var(--accent); background: var(--accent-dim); }
+#file-input { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
+.btn-primary {
+  background: var(--accent); color: #ffffff; font-family: var(--font-display);
+  font-weight: 800; font-size: .85rem; border: none; border-radius: 8px;
+  padding: 10px 22px; cursor: pointer; transition: opacity .15s, transform .1s;
+  letter-spacing: -.01em;
+}
+.btn-primary:hover { opacity: .9; }
+.btn-primary:active { transform: scale(.98); }
+.btn-ghost {
+  background: transparent; color: var(--muted2); font-family: var(--font-display);
+  font-weight: 500; font-size: .82rem; border: 1px solid var(--border2); border-radius: 8px;
+  padding: 8px 16px; cursor: pointer; transition: all .15s;
+}
+.btn-ghost:hover { border-color: var(--border2); color: var(--text); background: var(--surface2); }
+.btn-ghost:active { transform: scale(.98); }
+
+/* ── DASHBOARD ── */
+#dashboard { display: none; }
+.dash-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 1.75rem; flex-wrap: wrap; gap: 1rem; }
+.dash-title { font-size: 1.5rem; font-weight: 800; letter-spacing: -.03em; }
+.dash-title small { font-size: .75rem; font-weight: 400; color: var(--muted); display: block; font-family: var(--font-mono); margin-top: 3px; }
+.dash-actions { display: flex; gap: .5rem; align-items: center; }
+
+/* KPIs */
+.kpi-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: .875rem; margin-bottom: 1.75rem; }
+.kpi-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 1rem 1.25rem; box-shadow: 0 1px 3px rgba(0,0,0,.04); }
+.kpi-label { font-family: var(--font-mono); font-size: .65rem; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin-bottom: .65rem; }
+.kpi-pair { display: flex; align-items: center; gap: .75rem; }
+.kpi-col { display: flex; flex-direction: column; }
+.kpi-period { font-family: var(--font-mono); font-size: .58rem; color: var(--muted); margin-bottom: 2px; }
+.kpi-val { font-size: 1.75rem; font-weight: 700; line-height: 1; }
+.kpi-arrow { font-size: 1.1rem; color: var(--muted); margin-top: 10px; }
+.kpi-delta { font-family: var(--font-mono); font-size: .72rem; margin-top: .5rem; }
+.delta-down { color: var(--red); }
+.delta-up { color: var(--green); }
+.delta-neu { color: var(--muted); }
+
+/* MAIN GRID — removed, table is now full width */
+
+/* QUADRANT SUMMARY CARDS */
+.quadrant-cards .q-card {
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: .875rem 1rem; display: flex; align-items: center; gap: .75rem;
+  box-shadow: 0 1px 3px rgba(0,0,0,.04); transition: border-color .15s, box-shadow .15s;
+}
+.quadrant-cards .q-card:hover { border-color: var(--border2); box-shadow: 0 2px 8px rgba(0,0,0,.07); }
+.quadrant-cards .q-card.active { border-width: 2px; }
+.q-card.q-critique.active { border-color: var(--red); }
+.q-card.q-cta.active { border-color: var(--amber); }
+.q-card.q-seo.active { border-color: var(--blue); }
+.q-card.q-succes.active { border-color: var(--green); }
+.q-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+.q-info { display: flex; flex-direction: column; }
+.q-count { font-size: 1.35rem; font-weight: 800; line-height: 1; }
+.q-label { font-size: .72rem; font-weight: 600; margin-top: 2px; }
+.q-desc { font-family: var(--font-mono); font-size: .6rem; color: var(--muted); margin-top: 1px; }
+.panel { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 1.25rem; box-shadow: 0 1px 3px rgba(0,0,0,.04); }
+.panel-title { font-size: .7rem; font-weight: 700; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin-bottom: 1rem; display: flex; align-items: center; gap: .5rem; }
+.panel-title .count { background: var(--surface2); border: 1px solid var(--border); border-radius: 20px; font-family: var(--font-mono); padding: 1px 8px; font-size: .65rem; color: var(--muted2); }
+
+/* QUADRANT CHART */
+.chart-wrap { position: relative; width: 100%; height: 300px; }
+
+/* FILTER BAR */
+.filter-bar { display: flex; gap: .5rem; flex-wrap: wrap; margin-bottom: 1rem; align-items: center; }
+.filter-btn { font-family: var(--font-mono); font-size: .68rem; padding: 4px 10px; border-radius: 20px; border: 1px solid var(--border2); color: var(--muted2); background: transparent; cursor: pointer; transition: all .15s; }
+.filter-btn.active { color: #fff; font-weight: 500; }
+.filter-btn.all.active { background: var(--text); border-color: var(--text); color: #fff; }
+.filter-btn.critique.active { background: var(--red); border-color: var(--red); }
+.filter-btn.cta.active { background: var(--amber); border-color: var(--amber); }
+.filter-btn.seo.active { background: var(--blue); border-color: var(--blue); }
+.filter-btn.succes.active { background: var(--green); border-color: var(--green); }
+.search-input {
+  background: var(--surface2); border: 1px solid var(--border2); border-radius: 6px;
+  color: var(--text); font-family: var(--font-mono); font-size: .75rem; padding: 5px 10px;
+  outline: none; transition: border-color .2s; width: 200px; margin-left: auto;
+}
+.search-input:focus { border-color: var(--accent); }
+.sort-select {
+  background: var(--surface2); border: 1px solid var(--border2); border-radius: 6px;
+  color: var(--muted2); font-family: var(--font-mono); font-size: .72rem; padding: 5px 10px;
+  outline: none; cursor: pointer;
+}
+
+/* TABLE */
+.tbl-wrap { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; font-size: .78rem; }
+thead { position: sticky; top: 0; z-index: 2; }
+th { background: var(--surface2); padding: 8px 10px; text-align: left; font-family: var(--font-mono); font-size: .65rem; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); border-bottom: 1px solid var(--border); white-space: nowrap; cursor: pointer; user-select: none; }
+th:hover { color: var(--muted2); }
+th.sort-asc::after { content: ' ↑'; color: var(--accent); }
+th.sort-desc::after { content: ' ↓'; color: var(--accent); }
+td { padding: 7px 10px; border-bottom: 1px solid var(--border); vertical-align: middle; font-family: var(--font-mono); font-size: .72rem; color: var(--muted2); white-space: nowrap; }
+td:first-child { color: var(--muted); font-size: .65rem; text-align: center; width: 36px; }
+td:nth-child(2) { color: var(--text); font-size: .73rem; max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+tr:hover td { background: var(--surface2); }
+.badge { display: inline-block; padding: 2px 8px; border-radius: 20px; font-size: .62rem; font-weight: 500; white-space: nowrap; }
+.badge-critique { background: var(--red-dim); color: var(--red); border: 1px solid rgba(229,72,77,.2); }
+.badge-cta { background: var(--amber-dim); color: var(--amber); border: 1px solid rgba(229,147,11,.2); }
+.badge-seo { background: var(--blue-dim); color: var(--blue); border: 1px solid rgba(59,130,246,.2); }
+.badge-succes { background: var(--green-dim); color: var(--green); border: 1px solid rgba(22,163,74,.2); }
+.score-bar-wrap { display: flex; align-items: center; gap: 6px; }
+.score-bar { height: 4px; border-radius: 2px; background: var(--border2); flex: 1; overflow: hidden; }
+.score-bar-fill { height: 100%; border-radius: 2px; transition: width .3s; }
+.val-down { color: var(--red); }
+.val-up { color: var(--green); }
+.val-neu { color: var(--muted); }
+
+/* SEGMENTS — HTML bars */
+.seg-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1rem; }
+.seg-row {
+  display: grid; grid-template-columns: 110px 40px 65px 1fr 55px 55px; gap: 6px; align-items: center;
+  padding: 6px 8px; border-radius: 6px; font-family: var(--font-mono); font-size: .68rem;
+  transition: background .1s;
+}
+.seg-row:hover { background: var(--surface2); }
+.seg-name { color: var(--text); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.seg-bar-outer { height: 6px; background: var(--surface2); border-radius: 3px; overflow: hidden; position: relative; }
+.seg-bar-inner { height: 100%; border-radius: 3px; transition: width .4s ease; }
+.seg-val { text-align: right; font-size: .65rem; }
+.seg-meta { font-size: .6rem; color: var(--muted); text-align: right; }
+.seg-header {
+  display: grid; grid-template-columns: 110px 40px 65px 1fr 55px 55px; gap: 6px;
+  padding: 4px 8px; font-family: var(--font-mono); font-size: .58rem; color: var(--muted);
+  text-transform: uppercase; letter-spacing: .04em; border-bottom: 1px solid var(--border); margin-bottom: 2px;
+}
+
+/* ALERTS — redesigned */
+.alert-item {
+  display: grid; grid-template-columns: auto 1fr auto; gap: 8px; align-items: start;
+  padding: 10px 8px; border-bottom: 1px solid var(--border); transition: background .1s;
+}
+.alert-item:last-child { border-bottom: none; }
+.alert-item:hover { background: var(--surface2); border-radius: 6px; }
+.alert-icon { width: 28px; height: 28px; border-radius: 6px; display: flex; align-items: center; justify-content: center; font-size: .8rem; flex-shrink: 0; }
+.alert-icon.critique { background: var(--red-dim); }
+.alert-icon.cta { background: var(--amber-dim); }
+.alert-body { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.alert-title { font-size: .73rem; font-weight: 600; color: var(--text); }
+.alert-url { font-family: var(--font-mono); font-size: .63rem; color: var(--accent); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.alert-detail { font-family: var(--font-mono); font-size: .62rem; color: var(--muted); }
+.alert-rule { display: inline-block; font-family: var(--font-mono); font-size: .57rem; padding: 1px 6px; border-radius: 4px; background: var(--surface2); color: var(--muted); margin-top: 2px; }
+.alert-impact { font-family: var(--font-mono); font-size: .65rem; font-weight: 600; white-space: nowrap; flex-shrink: 0; }
+.alert-legend { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: .75rem; padding-bottom: .75rem; border-bottom: 1px solid var(--border); }
+.alert-legend-item { display: flex; align-items: center; gap: 4px; font-family: var(--font-mono); font-size: .58rem; color: var(--muted); padding: 2px 8px; background: var(--surface2); border-radius: 4px; }
+.alert-legend-item .al-icon { font-size: .7rem; }
+
+/* BOTTOM GRID */
+.bottom-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1rem; }
+
+/* LOADING */
+#loading { display: none; position: fixed; inset: 0; background: rgba(245,246,248,.92); z-index: 100; align-items: center; justify-content: center; flex-direction: column; gap: 1rem; }
+.spinner { width: 36px; height: 36px; border: 3px solid var(--border2); border-top-color: var(--accent); border-radius: 50%; animation: spin .7s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.loading-text { font-family: var(--font-mono); font-size: .8rem; color: var(--muted2); }
+
+/* EMPTY STATE */
+.empty { text-align: center; padding: 3rem 1rem; color: var(--muted); font-size: .85rem; }
+
+/* THRESHOLD SLIDERS */
+.sliders { display: grid; grid-template-columns: 1fr 1fr; gap: .75rem; margin-bottom: 1rem; }
+.slider-item { display: flex; flex-direction: column; gap: 5px; }
+.slider-item label { font-family: var(--font-mono); font-size: .65rem; color: var(--muted); display: flex; justify-content: space-between; }
+.slider-item label span { color: var(--accent); }
+input[type=range] { width: 100%; accent-color: var(--accent); cursor: pointer; }
+
+/* EXPORT */
+.export-bar { display: flex; gap: .5rem; align-items: center; padding-top: 1rem; border-top: 1px solid var(--border); margin-top: 1rem; }
+.export-label { font-family: var(--font-mono); font-size: .68rem; color: var(--muted); }
+
+/* TOAST */
+#toast { position: fixed; bottom: 1.5rem; right: 1.5rem; background: var(--text); border: 1px solid var(--border2); border-radius: 10px; padding: .75rem 1.25rem; font-family: var(--font-mono); font-size: .75rem; color: #fff; transform: translateY(80px); opacity: 0; transition: all .3s; z-index: 200; box-shadow: 0 4px 12px rgba(0,0,0,.1); }
+#toast.show { transform: translateY(0); opacity: 1; }
+
+@media (max-width: 900px) {
+  .kpi-row { grid-template-columns: 1fr; }
+  .quadrant-cards { grid-template-columns: repeat(2,1fr); }
+  .seg-grid, .bottom-grid { grid-template-columns: 1fr; }
+  main { padding: 1rem; }
+}
+</style>
+</head>
+<body>
+<div class="shell">
+<header>
+  <div class="logo">GA4 <span>Prioritizer</span></div>
+  <div class="header-meta">Analyse comparative GA4</div>
+</header>
+
+<main>
+
+<!-- DROP SCREEN -->
+<div id="drop-screen">
+  <div class="drop-card" id="drop-zone">
+    <input type="file" id="file-input" accept=".xlsx">
+    <div class="drop-icon">⬆</div>
+    <div class="drop-title">Dépose ton export GA4</div>
+    <div class="drop-sub">Format libre GA4 avec comparaison de dates<br>Détection automatique des colonnes et événements</div>
+    <div class="drop-formats">
+      <span class="pill accent">.xlsx</span>
+    </div>
+  </div>
+
+  <!-- Hidden fields for compat -->
+  <input type="hidden" id="cfg-min-vues" value="0">
+  <input type="hidden" id="cfg-evt-name" value="">
+  <input type="hidden" id="cfg-col-url" value="A">
+  <input type="hidden" id="cfg-col-vues" value="C">
+  <input type="hidden" id="cfg-col-evt" value="D">
+  <input type="hidden" id="cfg-col-m3" value="">
+  <div id="detection-summary" style="display:none"></div>
+</div>
+
+<!-- LOADING -->
+<div id="loading">
+  <div class="spinner"></div>
+  <div class="loading-text">Analyse en cours…</div>
+</div>
+
+<!-- DASHBOARD -->
+<div id="dashboard">
+
+  <div class="dash-header">
+    <div class="dash-title">
+      <span id="dash-site" style="color:var(--accent)"></span> Priorités d'action
+      <small id="dash-subtitle"></small>
+    </div>
+    <div class="dash-actions">
+      <button class="btn-ghost" onclick="resetApp()">← Nouvel export</button>
+      <button class="btn-primary" onclick="exportCSV()">⬇ Export CSV</button>
+    </div>
+  </div>
+
+  <!-- KPIs — dynamic -->
+  <div id="kpi-container" class="kpi-row"></div>
+
+  <div class="panel" style="margin-bottom:1rem">
+    <div class="panel-title">Paramètres de priorisation <span style="font-weight:400;color:var(--muted);text-transform:none;letter-spacing:0;font-size:.65rem;margin-left:.5rem">— une page est "critique" si elle dépasse les seuils sur le trafic ET sur au moins un événement</span></div>
+    <div id="thresholds-container" style="display:grid;gap:1rem;margin-bottom:1rem"></div>
+
+    <!-- Score methodology (collapsible) -->
+    <div>
+      <button onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display==='none'?'block':'none'; this.textContent=this.nextElementSibling.style.display==='none'?'▸ Comment le score est-il calculé ?':'▾ Comment le score est-il calculé ?'" style="background:none;border:none;font-family:var(--font-mono);font-size:.68rem;color:var(--accent);cursor:pointer;padding:0">▸ Comment le score est-il calculé ?</button>
+      <div style="display:none;margin-top:.5rem;padding:.75rem 1rem;background:var(--surface2);border:1px solid var(--border);border-radius:8px;font-family:var(--font-mono);font-size:.62rem;color:var(--muted2);line-height:1.9">
+        <div style="font-weight:600;color:var(--text);margin-bottom:4px;font-size:.68rem">Score de priorité (0–100)</div>
+        <div>L'impact absolu prime sur le pourcentage. Une page perdant 50 vues sur 1 000 (−5%) compte plus qu'une page perdant 2 vues sur 4 (−50%).</div>
+        <div style="margin-top:6px;display:grid;grid-template-columns:auto 1fr;gap:2px 10px">
+          <span style="color:var(--accent);font-weight:600">35%</span><span>Perte absolue de vues — nombre brut de vues perdues, normalisé</span>
+          <span style="color:var(--accent);font-weight:600">25%</span><span>Perte absolue d'événements (somme) — clics/conversions perdus, normalisé</span>
+          <span style="color:var(--accent);font-weight:600">20%</span><span>Volume de la page — poids stratégique (échelle log)</span>
+          <span style="color:var(--accent);font-weight:600">10%</span><span>Sévérité % × volume — le % de baisse, amorti par le volume réel</span>
+          <span style="color:var(--accent);font-weight:600">10%</span><span>Bonus catégorie — Critique=1, CTA=0.7, SEO=0.5, Succès=0</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Filters -->
+    <div style="display:flex;gap:1rem;margin-top:.75rem;align-items:center">
+      <div class="slider-item" style="flex:1;max-width:280px">
+        <label>Score minimum <span id="filter-score-val" style="color:var(--accent)">0</span></label>
+        <input type="range" id="filter-score" min="0" max="100" value="0" step="1" oninput="updateTableFilters()">
+      </div>
+      <div class="slider-item" style="flex:1;max-width:280px">
+        <label>Vues min. (P1 ou P2) <span id="filter-vues-val" style="color:var(--accent)">0</span></label>
+        <input type="range" id="filter-vues" min="0" max="5000" value="0" step="10" oninput="updateTableFilters()">
+      </div>
+      <div style="font-family:var(--font-mono);font-size:.62rem;color:var(--muted);margin-top:14px" id="filter-result-count"></div>
+    </div>
+  </div>
+
+  <!-- Quadrant summary cards -->
+  <div class="quadrant-cards" style="display:grid;grid-template-columns:repeat(4,1fr);gap:.75rem;margin-bottom:1rem">
+    <div class="q-card q-critique" id="qcard-critique" onclick="setFilterFromCard('critique')" style="cursor:pointer">
+      <div class="q-dot" style="background:var(--red)"></div>
+      <div class="q-info">
+        <div class="q-count" id="qc-critique">0</div>
+        <div class="q-label">Critique</div>
+        <div class="q-desc">Trafic ↓ & événement ↓</div>
+      </div>
+    </div>
+    <div class="q-card q-cta" id="qcard-cta" onclick="setFilterFromCard('cta')" style="cursor:pointer">
+      <div class="q-dot" style="background:var(--amber)"></div>
+      <div class="q-info">
+        <div class="q-count" id="qc-cta">0</div>
+        <div class="q-label">CTA à revoir</div>
+        <div class="q-desc">Trafic ↑ & événement ↓</div>
+      </div>
+    </div>
+    <div class="q-card q-seo" id="qcard-seo" onclick="setFilterFromCard('seo')" style="cursor:pointer">
+      <div class="q-dot" style="background:var(--blue)"></div>
+      <div class="q-info">
+        <div class="q-count" id="qc-seo">0</div>
+        <div class="q-label">SEO à récupérer</div>
+        <div class="q-desc">Trafic ↓ & événement ↑</div>
+      </div>
+    </div>
+    <div class="q-card q-succes" id="qcard-succes" onclick="setFilterFromCard('succes')" style="cursor:pointer">
+      <div class="q-dot" style="background:var(--green)"></div>
+      <div class="q-info">
+        <div class="q-count" id="qc-succes">0</div>
+        <div class="q-label">Succès</div>
+        <div class="q-desc">Trafic ↑ & événement ↑</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Table (full width) -->
+    <div class="panel">
+      <div class="panel-title">Pages à traiter <span class="count" id="tbl-count">0</span></div>
+      <div class="filter-bar" style="margin-bottom:.75rem">
+        <button class="filter-btn all active" onclick="setFilter('all',this)">Toutes <span id="cnt-all"></span></button>
+        <button class="filter-btn critique" onclick="setFilter('critique',this)">🔴 Critique <span id="cnt-crit"></span></button>
+        <button class="filter-btn cta" onclick="setFilter('cta',this)">🟠 CTA <span id="cnt-cta"></span></button>
+        <button class="filter-btn seo" onclick="setFilter('seo',this)">🔵 SEO <span id="cnt-seo"></span></button>
+        <button class="filter-btn succes" onclick="setFilter('succes',this)">🟢 Succès <span id="cnt-suc"></span></button>
+        <select class="sort-select" style="margin-left:auto" onchange="setTopN(+this.value)">
+          <option value="50">Top 50</option>
+          <option value="100" selected>Top 100</option>
+          <option value="250">Top 250</option>
+          <option value="500">Top 500</option>
+        </select>
+        <input class="search-input" type="text" placeholder="Filtrer par URL…" oninput="applyFilters()" style="margin-left:0">
+        <select class="sort-select" onchange="applySort(this.value)">
+          <option value="rank">Rang global</option>
+          <option value="score">Score priorité</option>
+          <option value="impact_v">Impact trafic</option>
+          <option value="impact_e">Impact événement</option>
+          <option value="var_v">Δ% trafic</option>
+          <option value="var_e">Δ% événement</option>
+          <option value="vues1">Vues P1</option>
+        </select>
+      </div>
+      <div class="tbl-wrap">
+        <table id="main-table">
+          <thead id="main-thead"></thead>
+          <tbody id="table-body"></tbody>
+        </table>
+      </div>
+      <div class="export-bar">
+        <span class="export-label">Export :</span>
+        <button class="btn-ghost" onclick="exportCSV()">CSV filtré</button>
+        <button class="btn-ghost" onclick="exportAll()">CSV complet</button>
+      </div>
+    </div>
+
+  <!-- Bottom grid -->
+  <div class="seg-grid" style="margin-top:1rem">
+    <div class="panel">
+      <div class="panel-title">Performance par section <span class="count" id="seg-count">0</span></div>
+      <div id="seg-bars" style="display:flex;flex-direction:column;gap:2px"></div>
+    </div>
+    <div class="panel">
+      <div class="panel-title">Alertes prioritaires <span class="count" id="alert-count">0</span></div>
+      <div id="alerts-list" style="display:flex;flex-direction:column;gap:0"></div>
+    </div>
+  </div>
+
+  <!-- Hidden quadrant canvas (kept for JS compat) -->
+  <canvas id="quadrantChart" style="display:none"></canvas>
+
+</div><!-- /dashboard -->
+
+</main>
+</div>
+
+<div id="toast"></div>
+
+<script>
+// ─── STATE ───────────────────────────────────────────────────────────────────
+let allPages = [];
+let allPagesUnfiltered = [];
+let filtered = [];
+let currentFilter = 'all';
+let currentSort = 'score';
+let sortDir = -1;
+let topN = 100;
+let quadrantChart = null;
+let segChart = null;
+let evtName = 'Événement';
+let detectedEvents = []; // [{name, col}] — all event columns detected
+let globalTotals = { v1: null, v2: null, e1: null, e2: null };
+let lastRaw = [];
+
+// ─── UPLOAD HANDLING ─────────────────────────────────────────────────────────
+const dropZone = document.getElementById('drop-zone');
+const fileInput = document.getElementById('file-input');
+
+dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('dragging'); });
+dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragging'));
+dropZone.addEventListener('drop', e => {
+  e.preventDefault(); dropZone.classList.remove('dragging');
+  const f = e.dataTransfer.files[0];
+  if (f) processFile(f);
+});
+fileInput.addEventListener('change', e => { if (e.target.files[0]) processFile(e.target.files[0]); });
+
+function processFile(file) {
+  if (quadrantChart) { quadrantChart.destroy(); quadrantChart = null; }
+  if (segChart)      { segChart.destroy();      segChart = null; }
+  showLoading();
+  const reader = new FileReader();
+  reader.onload = e => {
+    try {
+      const data = new Uint8Array(e.target.result);
+      const wb  = XLSX.read(data, { type: 'array' });
+      const ws  = wb.Sheets[wb.SheetNames[0]];
+      const raw = XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: null });
+      lastRaw = raw;
+      parseGA4Export(raw, file.name);
+    } catch(err) {
+      hideLoading();
+      toast('Erreur de lecture : ' + err.message);
+    }
+  };
+  reader.readAsArrayBuffer(file);
+}
+
+// ─── AUTO-DETECT & PARSE GA4 FORMAT LIBRE ────────────────────────────────────
+
+function detectFormat(raw) {
+  // Returns { format, colUrl, colVues, colEvt, colM3, evtName, siteName, headerRow, totalsCols }
+  // format: 'simple' (5-col) or 'multi' (9+ col with monthly breakdown)
+
+  function clean(v) {
+    if (v === null || v === undefined) return '';
+    return String(v).replace(/'/g, '').replace(/\u00a0/g, ' ').replace(/\u202f/g, ' ').replace(/\u2013/g, '-').replace(/\u2014/g, '-').trim();
+  }
+
+  let siteName = '';
+  let headerRow = -1;
+  let colUrl = 0, colVues = -1, colEvt = -1, colM3 = null;
+  let evtName = 'Événement';
+  let format = 'simple';
+  let totalsCols = null; // for multi format: { vues, evt }
+
+  // ── Pass 1: scan comment/metadata lines ──────────────────────────────────
+  for (let r = 0; r < Math.min(raw.length, 10); r++) {
+    const row = raw[r];
+    if (!row) continue;
+    const c0 = clean(row[0]);
+    // Extract site name from comment like "# eau.selectra.info - GA4"
+    const siteMatch = c0.match(/^#?\s*([a-z0-9._-]+\.[a-z]{2,})\s*[-–]\s*GA4/i);
+    if (siteMatch) siteName = siteMatch[1];
+  }
+
+  // ── Pass 2: find the header row with "Chemin de la page" and metric names ──
+  for (let r = 0; r < Math.min(raw.length, 15); r++) {
+    const row = raw[r];
+    if (!row) continue;
+    for (let c = 0; c < row.length; c++) {
+      const val = clean(row[c]).toLowerCase();
+      if (val.includes('chemin de la page') || val.includes('page path')) {
+        headerRow = r;
+        colUrl = c;
+        break;
+      }
+    }
+    if (headerRow >= 0) break;
+  }
+
+  if (headerRow === -1) {
+    return null; // can't detect
+  }
+
+  const hRow = raw[headerRow];
+
+  // ── Pass 3: detect columns ───────────────────────────────────────────────
+  // Look for "Vues" and event name columns in the header row
+  // Also check the row above for "Mois" / "Totaux" indicators (multi format)
+
+  const rowAbove = headerRow > 0 ? raw[headerRow - 1] : null;
+  let hasTotaux = false;
+  let totauxStartCol = -1;
+
+  if (rowAbove) {
+    for (let c = 0; c < (rowAbove.length || 0); c++) {
+      const val = clean(rowAbove[c]).toLowerCase();
+      if (val === 'totaux' || val === 'total') {
+        hasTotaux = true;
+        if (totauxStartCol === -1) totauxStartCol = c;
+      }
+    }
+  }
+
+  // Scan header row for metric columns
+  const vuesCols = [];
+  const evtCols = [];
+
+  for (let c = 0; c < hRow.length; c++) {
+    const val = clean(hRow[c]).toLowerCase();
+    if (val === 'vues' || val === 'views') {
+      vuesCols.push(c);
+    } else if (val && val !== 'comparaison de dates' && val !== 'date comparison'
+               && !val.includes('chemin') && !val.includes('page path')
+               && val !== 'total général' && val !== 'grand total') {
+      // This is likely an event name column
+      evtCols.push({ col: c, name: clean(hRow[c]) });
+    }
+  }
+
+  // ── Determine format ────────────────────────────────────────────────────
+  // allEvtCols: the event columns to use for data reading
+  let allEvtCols = [];
+
+  if (hasTotaux && vuesCols.length >= 2 && totauxStartCol > 0) {
+    format = 'multi';
+    const totauxVues = vuesCols.filter(c => c >= totauxStartCol);
+    const totauxEvts = evtCols.filter(e => e.col >= totauxStartCol);
+
+    if (totauxVues.length > 0) {
+      colVues = totauxVues[0];
+    }
+    allEvtCols = totauxEvts;
+    if (allEvtCols.length > 0) {
+      colEvt = allEvtCols[0].col;
+      evtName = allEvtCols.map(e => e.name).join(' + ');
+    }
+  } else {
+    format = 'simple';
+    if (vuesCols.length >= 1) {
+      colVues = vuesCols[0];
+    }
+    // All event columns after Vues
+    const afterVues = evtCols.filter(e => e.col > colVues);
+    allEvtCols = afterVues.length > 0 ? afterVues : evtCols;
+    if (allEvtCols.length > 0) {
+      colEvt = allEvtCols[0].col;
+      evtName = allEvtCols.map(e => e.name).join(' + ');
+    }
+  }
+
+  // Final fallback if detection failed
+  if (colVues === -1) colVues = colUrl + 2;
+  if (colEvt === -1) colEvt = colVues + 1;
+
+  return { format, colUrl, colVues, colEvt, allEvtCols, evtName, siteName, headerRow };
+}
+
+function parseGA4Export(raw, filename) {
+  const detection = detectFormat(raw);
+
+  if (!detection) {
+    hideLoading();
+    toast('Structure non reconnue. Format GA4 « Format libre » attendu.');
+    return;
+  }
+
+  const { format, colUrl, colVues, allEvtCols, siteName, headerRow } = detection;
+  detectedEvents = allEvtCols; // store globally for table rendering
+  evtName = detection.evtName;
+
+  // Update hidden fields for compat
+  document.getElementById('cfg-evt-name').value = evtName;
+
+  const minVues = parseInt(document.getElementById('cfg-min-vues').value) || 0;
+
+  function clean(v) {
+    if (v === null || v === undefined) return '';
+    return String(v).replace(/'/g, '').replace(/\u00a0/g, ' ').replace(/\u202f/g, ' ').replace(/\u2013/g, '-').replace(/\u2014/g, '-').trim();
+  }
+
+  let startRow = -1;
+  let period1Label = 'Période 1', period2Label = 'Période 2';
+  globalTotals = { v1: null, v2: null, e1: null, e2: null };
+
+  const colComp = 1;
+
+  for (let r = headerRow + 1; r < Math.min(raw.length, headerRow + 25); r++) {
+    const row = raw[r];
+    if (!row) continue;
+    const c0 = clean(row[colUrl]);
+    const c1 = clean(row[colComp] ?? '');
+
+    if (!c0 && c1 && toNum(row[colVues]) > 100) {
+      const lbl = c1.toLowerCase();
+      const hasMonth = ['jan','fev','fév','mar','avr','mai','juin','juil','aou','aoû','sep','oct','nov','dec','déc'].some(m => lbl.includes(m));
+      if (hasMonth) {
+        const v = toNum(row[colVues]);
+        const e = allEvtCols.reduce((s, ec) => s + toNum(row[ec.col]), 0);
+        if (globalTotals.v1 === null) {
+          globalTotals.v1 = v; globalTotals.e1 = e;
+          period1Label = c1.replace(/^['"]|['"]$/g,'').trim();
+        } else if (globalTotals.v2 === null) {
+          globalTotals.v2 = v; globalTotals.e2 = e;
+          period2Label = c1.replace(/^['"]|['"]$/g,'').trim();
+        }
+      }
+    }
+
+    if (c0.startsWith('/') && c1.toLowerCase().includes('variation') && startRow === -1) {
+      startRow = r;
+    }
+  }
+
+  if (startRow === -1) {
+    for (let r = headerRow + 1; r < raw.length; r++) {
+      const row = raw[r];
+      if (!row) continue;
+      const c0 = clean(row[colUrl]);
+      const c1 = clean(row[colComp] ?? '');
+      if (c0.startsWith('/') && c1.toLowerCase().includes('variation')) { startRow = r; break; }
+    }
+  }
+
+  if (startRow === -1) {
+    hideLoading();
+    toast('Aucune donnée de page détectée après l\'en-tête.');
+    return;
+  }
+
+  // ── Parse pages with ALL event columns ────────────────────────────────────
+  const pages = [];
+  let i = startRow;
+
+  while (i < raw.length) {
+    const row = raw[i];
+    if (!row) { i++; continue; }
+
+    const urlVal = clean(row[colUrl]);
+    const labelCol = clean(row[colComp] ?? '');
+    const isVariation = urlVal.startsWith('/') && labelCol.toLowerCase().includes('variation');
+
+    if (isVariation) {
+      const rowP1 = raw[i + 1];
+      const rowP2 = raw[i + 2];
+      if (!rowP1 || !rowP2) { i++; continue; }
+
+      const vues1 = toNum(rowP1[colVues]);
+      const vues2 = toNum(rowP2[colVues]);
+
+      // Read each event column individually
+      const events = allEvtCols.map(ec => {
+        const p1 = toNum(rowP1[ec.col]);
+        const p2 = toNum(rowP2[ec.col]);
+        return { name: ec.name, p1, p2 };
+      });
+
+      // Combined event totals (sum of all events)
+      const evt1 = events.reduce((s, e) => s + e.p1, 0);
+      const evt2 = events.reduce((s, e) => s + e.p2, 0);
+
+      const var_v = vues1 > 0 ? (vues2 - vues1) / vues1 * 100 : null;
+      const var_e = evt1  > 0 ? (evt2  - evt1)  / evt1  * 100 : (evt2 > 0 ? Infinity : null);
+      const ctr1  = vues1 > 0 ? evt1 / vues1 * 100 : 0;
+      const ctr2  = vues2 > 0 ? evt2 / vues2 * 100 : 0;
+
+      pages.push({ page: urlVal, vues1, vues2, evt1, evt2, events, var_v, var_e, ctr1, ctr2,
+        impact_v: vues1 - vues2, impact_e: evt1 - evt2, score: 0 });
+      i += 3;
+    } else {
+      i++;
+    }
+  }
+
+  if (pages.length === 0) {
+    hideLoading();
+    toast('Aucune page détectée. Vérifiez le format du fichier.');
+    return;
+  }
+
+  allPagesUnfiltered = pages;
+
+  if (globalTotals.v1 === null || globalTotals.v1 < 1) {
+    globalTotals.v1 = pages.reduce((s,p) => s + p.vues1, 0);
+    globalTotals.v2 = pages.reduce((s,p) => s + p.vues2, 0);
+    globalTotals.e1 = pages.reduce((s,p) => s + p.evt1,  0);
+    globalTotals.e2 = pages.reduce((s,p) => s + p.evt2,  0);
+  }
+
+  allPages = minVues > 0 ? pages.filter(p => p.vues1 >= minVues || p.vues2 >= minVues) : pages;
+  computeScores();
+
+  updateDashboard(filename, period1Label, period2Label, siteName);
+  hideLoading();
+}
+
+// ─── DEMO DATA ───────────────────────────────────────────────────────────────
+function loadDemo() {
+  evtName = 'selectra_tel_link';
+  detectedEvents = [{name: 'selectra_tel_link', col: 3}];
+  const demo = [
+    ['/consommation',5673,1916,40,6],['/veolia/espace-client-mon-compte',5510,2694,27,22],
+    ['/prix-eau',3338,1124,13,4],['/contact',1140,269,26,17],
+    ['/consommation/fuite-cuvette-wc',2209,1876,8,0],['/veolia/facture',913,353,11,3],
+    ['/annuaire',934,432,8,3],['/saur/service-client',885,426,99,66],
+    ['/veolia/contact',860,322,36,27],['/demenagement/ouverture-compteur/veolia',975,444,23,14],
+    ['/consommation/pfas',907,944,88,1],['/suez/service-client',627,895,49,101],
+    ['/commune/28134',234,604,17,114],['/compteur/bloquer',858,417,2,3],
+    ['/demenagement/ouverture-compteur',495,184,9,11],['/delegataire/19565',218,128,24,41],
+    ['/delegataire/9058',267,140,25,32],['/compteur/changement',479,298,4,6],
+    ['/delegataire/5756/contact',347,253,27,32],['/prix-eau/abonnement',409,187,3,1],
+    ['/veolia/espace-client',418,119,7,4],['/compteur/numero',1208,650,2,1],
+    ['/compteur/legislation',1075,637,4,3],['/abonnement/prix',409,187,3,1],
+    ['/suez/espace-client-mon-compte',298,109,4,1],['/commune/88413',97,87,6,15],
+    ['/commune/57631',111,63,9,15],['/delegataire/365',84,38,8,17],
+    ['/demenagement/changement-titulaire',429,182,7,9],['/compteur/nouveau',311,144,2,4],
+  ];
+  allPages = demo.map(([page,vues1,vues2,evt1,evt2]) => {
+    const var_v = vues1 > 0 ? (vues2-vues1)/vues1*100 : null;
+    const var_e = evt1 > 0 ? (evt2-evt1)/evt1*100 : null;
+    return { page, vues1, vues2, evt1, evt2, events: [{name:'selectra_tel_link', p1:evt1, p2:evt2}],
+      var_v, var_e, ctr1: vues1>0?evt1/vues1*100:0, ctr2: vues2>0?evt2/vues2*100:0,
+      impact_v: vues1-vues2, impact_e: evt1-evt2, score:0 };
+  });
+  allPagesUnfiltered = allPages;
+  globalTotals = { v1: 187221, v2: 96043, e1: 4930, e2: 5938 };
+  computeScores();
+  updateDashboard('Démo', '1 nov. – 28 nov. 2025', '1 févr. – 28 févr. 2026');
+}
+
+// ─── SCORING ─────────────────────────────────────────────────────────────────
+function computeScores() {
+  const tv  = parseFloat(document.getElementById('thresh-v')?.value ?? -10);
+  const tva = parseInt(document.getElementById('thresh-v-abs')?.value ?? 100);
+
+  // Read per-event thresholds
+  const evtThresholds = detectedEvents.map((e, idx) => ({
+    te: parseFloat(document.getElementById('thresh-e'+idx)?.value ?? -10),
+    tea: parseInt(document.getElementById('thresh-e'+idx+'-abs')?.value ?? 5)
+  }));
+
+  const absLossV = allPages.map(p => Math.max(0, p.vues1 - p.vues2));
+  const absLossE = allPages.map(p => Math.max(0, p.evt1 - p.evt2));
+  const volumes  = allPages.map(p => Math.max(p.vues1, p.vues2));
+
+  const maxLossV = safeMax(absLossV, 1);
+  const maxLossE = safeMax(absLossE, 1);
+  const maxVol   = safeMax(volumes, 1);
+  const logMaxVol = Math.log1p(maxVol);
+
+  allPages.forEach((p, i) => {
+    p.category = categorize(p, tv, tva, evtThresholds);
+
+    const normLossV = absLossV[i] / maxLossV;
+    const normLossE = absLossE[i] / maxLossE;
+    const normVol   = logMaxVol > 0 ? Math.log1p(volumes[i]) / logMaxVol : 0;
+    const rawPctV = p.var_v !== null ? Math.min(Math.abs(p.var_v) / 100, 1) : 0;
+    const pctSeverity = rawPctV * Math.sqrt(normVol);
+    const catBonus = { critique:1, cta:0.7, seo:0.5, succes:0 }[p.category] ?? 0;
+
+    p.score = Math.round(
+      (normLossV * 0.35 + normLossE * 0.25 + normVol * 0.20 + pctSeverity * 0.10 + catBonus * 0.10) * 100
+    );
+  });
+
+  [...allPages].sort((a,b) => b.score - a.score).forEach((p, i) => { p.rank = i + 1; });
+}
+
+function categorize(p, tv, tva, evtThresholds) {
+  const vDown = p.var_v !== null && p.var_v <= tv && p.impact_v >= tva;
+  const vUp = p.var_v !== null && p.var_v > 0;
+
+  // Event is "down" if ANY individual event exceeds its threshold
+  let anyEvtDown = false;
+  let anyEvtUp = false;
+  if (p.events && p.events.length > 0) {
+    p.events.forEach((ev, idx) => {
+      const th = evtThresholds[idx] || { te: -10, tea: 5 };
+      const loss = ev.p1 - ev.p2;
+      const varE = ev.p1 > 0 ? (ev.p2 - ev.p1) / ev.p1 * 100 : (ev.p2 > 0 ? Infinity : null);
+      if (varE !== null && isFinite(varE) && varE <= th.te && loss >= th.tea) anyEvtDown = true;
+      if (varE !== null && (varE > 0 || varE === Infinity)) anyEvtUp = true;
+    });
+  } else {
+    // Fallback for combined evt1/evt2
+    const varE = p.var_e;
+    const th = evtThresholds[0] || { te: -10, tea: 5 };
+    if (varE !== null && isFinite(varE) && varE <= th.te && p.impact_e >= th.tea) anyEvtDown = true;
+    if (varE !== null && (varE > 0 || varE === Infinity)) anyEvtUp = true;
+  }
+
+  if (vDown && anyEvtDown) return 'critique';
+  if (!vDown && anyEvtDown) return 'cta';
+  if (vDown && !anyEvtDown) return 'seo';
+  if (vUp && anyEvtUp) return 'succes';
+  return 'succes';
+}
+
+// ─── DASHBOARD UPDATE ─────────────────────────────────────────────────────────
+function updateDashboard(filename, p1, p2, site) {
+  document.getElementById('drop-screen').style.display = 'none';
+  document.getElementById('dashboard').style.display = 'block';
+  document.getElementById('dash-subtitle').textContent = `${filename} \u00b7 ${p1} vs ${p2}`;
+
+  const siteEl = document.getElementById('dash-site');
+  if (site) {
+    siteEl.textContent = site + ' \u2014';
+    document.querySelector('.header-meta').textContent = site + ' \u00b7 Analyse comparative';
+  } else { siteEl.textContent = ''; }
+
+  function cleanEvtName(raw) {
+    return raw.replace(/_nbr$/i, '').replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+  }
+
+  const shortP1 = p1.length > 20 ? p1.substring(0,18) + '\u2026' : p1;
+  const shortP2 = p2.length > 20 ? p2.substring(0,18) + '\u2026' : p2;
+  const totV1 = globalTotals.v1, totV2 = globalTotals.v2;
+  const dv = totV1 > 0 ? (totV2 - totV1) / totV1 * 100 : 0;
+
+  // Per-event totals
+  const evtTotals = detectedEvents.map((e, idx) => {
+    let s1 = 0, s2 = 0;
+    allPagesUnfiltered.forEach(p => { if (p.events && p.events[idx]) { s1 += p.events[idx].p1; s2 += p.events[idx].p2; } });
+    return { name: e.name, clean: cleanEvtName(e.name), p1: s1, p2: s2 };
+  });
+
+  // ── KPI cards ──
+  let kpi = `<div class="kpi-card"><div class="kpi-label">Trafic (vues)</div>
+    <div class="kpi-pair"><div class="kpi-col"><div class="kpi-period">${shortP1}</div><div class="kpi-val">${fmt(totV1)}</div></div>
+    <div class="kpi-arrow">\u2192</div><div class="kpi-col"><div class="kpi-period">${shortP2}</div><div class="kpi-val">${fmt(totV2)}</div></div></div>
+    <div class="kpi-delta ${dv >= 0 ? 'delta-up' : 'delta-down'}">${(dv >= 0 ? '\u25b2 +' : '\u25bc ') + dv.toFixed(1)}%</div></div>`;
+  evtTotals.forEach(et => {
+    const de = et.p1 > 0 ? (et.p2 - et.p1) / et.p1 * 100 : 0;
+    kpi += `<div class="kpi-card"><div class="kpi-label">${et.clean}</div>
+      <div class="kpi-pair"><div class="kpi-col"><div class="kpi-period">${shortP1}</div><div class="kpi-val">${fmt(et.p1)}</div></div>
+      <div class="kpi-arrow">\u2192</div><div class="kpi-col"><div class="kpi-period">${shortP2}</div><div class="kpi-val">${fmt(et.p2)}</div></div></div>
+      <div class="kpi-delta ${de >= 0 ? 'delta-up' : 'delta-down'}">${(de >= 0 ? '\u25b2 +' : '\u25bc ') + de.toFixed(1)}%</div></div>`;
+  });
+  document.getElementById('kpi-container').innerHTML = kpi;
+
+  // ── Threshold sliders ──
+  const nCols = 1 + detectedEvents.length;
+  let th = `<div style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:.875rem 1rem">
+    <div style="font-family:var(--font-mono);font-size:.65rem;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:.75rem">Seuil \u2014 Trafic</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:.625rem">
+      <div class="slider-item"><label>Variation <span id="thresh-v-val" style="color:var(--red)">\u221210%</span></label>
+        <input type="range" id="thresh-v" min="-80" max="0" value="-10" step="1" oninput="updateThresholds()"></div>
+      <div class="slider-item"><label>Perte absolue <span id="thresh-v-abs-val" style="color:var(--red)">\u2212100 vues</span></label>
+        <input type="range" id="thresh-v-abs" min="0" max="2000" value="100" step="10" oninput="updateThresholds()"></div>
+    </div></div>`;
+  detectedEvents.forEach((e, idx) => {
+    const cn = cleanEvtName(e.name);
+    th += `<div style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:.875rem 1rem">
+      <div style="font-family:var(--font-mono);font-size:.65rem;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:.75rem">Seuil \u2014 ${cn}</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:.625rem">
+        <div class="slider-item"><label>Variation <span id="thresh-e${idx}-val" style="color:var(--red)">\u221210%</span></label>
+          <input type="range" id="thresh-e${idx}" min="-80" max="0" value="-10" step="1" oninput="updateThresholds()"></div>
+        <div class="slider-item"><label>Perte absolue <span id="thresh-e${idx}-abs-val" style="color:var(--red)">\u22125</span></label>
+          <input type="range" id="thresh-e${idx}-abs" min="0" max="100" value="5" step="1" oninput="updateThresholds()"></div>
+      </div></div>`;
+  });
+  const thC = document.getElementById('thresholds-container');
+  thC.style.gridTemplateColumns = `repeat(${nCols}, 1fr)`;
+  thC.innerHTML = th;
+
+  // ── Dynamic thead ──
+  let hd = `<tr><th onclick="sortBy('rank')" style="width:36px">#</th>
+    <th onclick="sortBy('page')">URL</th><th onclick="sortBy('score')">Score</th>
+    <th onclick="sortBy('category')">Quadrant</th><th onclick="sortBy('vues1')">Vues P1</th>
+    <th onclick="sortBy('vues2')">Vues P2</th><th onclick="sortBy('var_v')">\u0394 Trafic</th>`;
+  detectedEvents.forEach((e, idx) => {
+    const s = cleanEvtName(e.name).substring(0, 14);
+    hd += `<th onclick="sortBy('evt_${idx}_p1')">${s} P1</th>`;
+    hd += `<th onclick="sortBy('evt_${idx}_p2')">${s} P2</th>`;
+    hd += `<th onclick="sortBy('evt_${idx}_var')">\u0394 ${s}</th>`;
+  });
+  hd += `<th onclick="sortBy('ctr1')">Conv. P1</th><th onclick="sortBy('ctr2')">Conv. P2</th></tr>`;
+  document.getElementById('main-thead').innerHTML = hd;
+
+  applyFilters(); drawQuadrant(); drawSegments(); drawAlerts();
+}
+
+
+let _threshTimer = null;
+function updateThresholds() {
+  // Traffic labels
+  const tv  = parseFloat(document.getElementById('thresh-v')?.value ?? -10);
+  const tva = parseInt(document.getElementById('thresh-v-abs')?.value ?? 100);
+  const vVal = document.getElementById('thresh-v-val');
+  const vAbsVal = document.getElementById('thresh-v-abs-val');
+  if (vVal) vVal.textContent = tv + '%';
+  if (vAbsVal) vAbsVal.textContent = '−' + tva.toLocaleString('fr-FR') + ' vues';
+
+  // Per-event labels
+  detectedEvents.forEach((e, idx) => {
+    const te = parseFloat(document.getElementById('thresh-e'+idx)?.value ?? -10);
+    const tea = parseInt(document.getElementById('thresh-e'+idx+'-abs')?.value ?? 5);
+    const eVal = document.getElementById('thresh-e'+idx+'-val');
+    const eAbsVal = document.getElementById('thresh-e'+idx+'-abs-val');
+    if (eVal) eVal.textContent = te + '%';
+    if (eAbsVal) eAbsVal.textContent = '−' + tea;
+  });
+
+  clearTimeout(_threshTimer);
+  _threshTimer = setTimeout(() => {
+    computeScores();
+    applyFilters();
+    drawQuadrant();
+    drawAlerts();
+  }, 150);
+}
+
+// ─── TABLE ────────────────────────────────────────────────────────────────────
+function updateTableFilters() {
+  const minScore = parseInt(document.getElementById('filter-score').value) || 0;
+  const minVues = parseInt(document.getElementById('filter-vues').value) || 0;
+  document.getElementById('filter-score-val').textContent = minScore;
+  document.getElementById('filter-vues-val').textContent = minVues.toLocaleString('fr-FR');
+  applyFilters();
+}
+
+function applyFilters() {
+  const search = document.querySelector('.search-input')?.value.toLowerCase() ?? '';
+  const minScore = parseInt(document.getElementById('filter-score')?.value) || 0;
+  const minVues = parseInt(document.getElementById('filter-vues')?.value) || 0;
+  filtered = allPages.filter(p => {
+    if (currentFilter !== 'all' && p.category !== currentFilter) return false;
+    if (search && !p.page.toLowerCase().includes(search)) return false;
+    if (minScore > 0 && p.score < minScore) return false;
+    if (minVues > 0 && p.vues1 < minVues && p.vues2 < minVues) return false;
+    return true;
+  });
+  // Update filter count
+  const frc = document.getElementById('filter-result-count');
+  if (frc) {
+    const excluded = allPages.length - filtered.length;
+    frc.textContent = excluded > 0 ? `${filtered.length} pages retenues (${excluded} exclues)` : '';
+  }
+  sortFiltered();
+  renderTable();
+  updateCounts();
+}
+
+function sortFiltered() {
+  filtered.sort((a,b) => {
+    let av, bv;
+    const evtMatch = currentSort.match(/^evt_(\d+)_(p[12]|var)$/);
+    if (evtMatch) {
+      const idx = parseInt(evtMatch[1]);
+      const field = evtMatch[2];
+      if (field === 'var') {
+        const ae = a.events?.[idx], be = b.events?.[idx];
+        av = ae && ae.p1 > 0 ? (ae.p2 - ae.p1) / ae.p1 * 100 : 0;
+        bv = be && be.p1 > 0 ? (be.p2 - be.p1) / be.p1 * 100 : 0;
+      } else {
+        av = a.events?.[idx]?.[field] ?? 0;
+        bv = b.events?.[idx]?.[field] ?? 0;
+      }
+      return (av - bv) * sortDir;
+    }
+    av = a[currentSort] ?? 0; bv = b[currentSort] ?? 0;
+    if (currentSort === 'page') { av = a.page; bv = b.page; return av < bv ? sortDir : -sortDir; }
+    if (currentSort === 'category') { av = a.category; bv = b.category; return av < bv ? sortDir : -sortDir; }
+    return (av - bv) * sortDir;
+  });
+}
+
+function setTopN(n) { topN = n; renderTable(); }
+
+function applySort(val) { currentSort = val; sortFiltered(); renderTable(); }
+function sortBy(col) {
+  if (currentSort === col) sortDir *= -1; else { currentSort = col; sortDir = -1; }
+  document.querySelectorAll('th').forEach(t => { t.classList.remove('sort-asc','sort-desc'); });
+  const th = document.querySelector(`th[onclick="sortBy('${col}')"]`);
+  if (th) th.classList.add(sortDir === -1 ? 'sort-desc' : 'sort-asc');
+  sortFiltered(); renderTable();
+}
+
+function renderTable() {
+  const tbody = document.getElementById('table-body');
+  let limit = topN > 0 ? filtered.slice(0, topN) : filtered;
+  
+  // Performance safeguard: cap at 2000 rows to avoid browser freeze
+  const MAX_RENDER = 2000;
+  let capped = false;
+  if (limit.length > MAX_RENDER) {
+    limit = limit.slice(0, MAX_RENDER);
+    capped = true;
+  }
+  
+  const shown = limit.length;
+  const total = filtered.length;
+  let countText = String(shown);
+  if (capped) countText = `${shown} / ${total} (limité à ${MAX_RENDER} pour la performance)`;
+  else if (topN > 0 && total > topN) countText = `${shown} / ${total}`;
+  else countText = String(total);
+  document.getElementById('tbl-count').textContent = countText;
+  if (!limit.length) { tbody.innerHTML = `<tr><td colspan="20" class="empty">Aucune page à afficher.</td></tr>`; return; }
+  tbody.innerHTML = limit.map((p, i) => {
+    const catBadge = `<span class="badge badge-${p.category}">${catLabel(p.category)}</span>`;
+    const barColor = { critique:'var(--red)', cta:'var(--amber)', seo:'var(--blue)', succes:'var(--green)' }[p.category];
+    const scoreBar = `<div class="score-bar-wrap"><div class="score-bar"><div class="score-bar-fill" style="width:${p.score}%;background:${barColor}"></div></div><span style="font-size:.65rem;color:var(--muted2);min-width:22px">${p.score}</span></div>`;
+
+    let evtCells = '';
+    if (p.events && p.events.length > 0) {
+      p.events.forEach(e => {
+        const varE = e.p1 > 0 ? (e.p2 - e.p1) / e.p1 * 100 : (e.p2 > 0 ? Infinity : null);
+        evtCells += `<td>${fmt(e.p1)}</td><td>${fmt(e.p2)}</td>`;
+        evtCells += `<td class="${pctClass(varE)}">${fmtDelta(varE, e.p1, e.p2)}</td>`;
+      });
+    } else {
+      // Fallback for demo/compat
+      evtCells = `<td>${fmt(p.evt1)}</td><td>${fmt(p.evt2)}</td>`;
+      evtCells += `<td class="${pctClass(p.var_e)}">${fmtDelta(p.var_e, p.evt1, p.evt2)}</td>`;
+    }
+
+    return `<tr>
+      <td style="font-family:var(--font-mono);font-size:.65rem;color:var(--muted);text-align:center">${i + 1}</td>
+      <td title="${p.page}">${p.page}</td>
+      <td>${scoreBar}</td>
+      <td>${catBadge}</td>
+      <td>${fmt(p.vues1)}</td>
+      <td>${fmt(p.vues2)}</td>
+      <td class="${pctClass(p.var_v)}">${fmtDelta(p.var_v, p.vues1, p.vues2)}</td>
+      ${evtCells}
+      <td>${p.ctr1.toFixed(1)}%</td>
+      <td>${p.ctr2.toFixed(1)}%</td>
+    </tr>`;
+  }).join('');
+}
+
+function updateCounts() {
+  const cats = { critique:0, cta:0, seo:0, succes:0 };
+  allPages.forEach(p => { if (cats[p.category] !== undefined) cats[p.category]++; });
+  document.getElementById('cnt-all').textContent = '('+allPages.length+')';
+  document.getElementById('cnt-crit').textContent = '('+cats.critique+')';
+  document.getElementById('cnt-cta').textContent = '('+cats.cta+')';
+  document.getElementById('cnt-seo').textContent = '('+cats.seo+')';
+  document.getElementById('cnt-suc').textContent = '('+cats.succes+')';
+  // Update quadrant summary cards
+  document.getElementById('qc-critique').textContent = cats.critique;
+  document.getElementById('qc-cta').textContent = cats.cta;
+  document.getElementById('qc-seo').textContent = cats.seo;
+  document.getElementById('qc-succes').textContent = cats.succes;
+}
+
+function setFilter(f, btn) {
+  currentFilter = f;
+  document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  document.querySelectorAll('.q-card').forEach(c => c.classList.remove('active'));
+  if (f !== 'all') {
+    const qc = document.getElementById('qcard-'+f);
+    if (qc) qc.classList.add('active');
+  }
+  applyFilters();
+}
+
+function setFilterFromCard(cat) {
+  // Toggle: if already filtering this cat, go back to all
+  if (currentFilter === cat) {
+    currentFilter = 'all';
+    document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+    document.querySelector('.filter-btn.all').classList.add('active');
+    document.querySelectorAll('.q-card').forEach(c => c.classList.remove('active'));
+  } else {
+    currentFilter = cat;
+    document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+    const filterBtn = document.querySelector('.filter-btn.'+cat);
+    if (filterBtn) filterBtn.classList.add('active');
+    document.querySelectorAll('.q-card').forEach(c => c.classList.remove('active'));
+    document.getElementById('qcard-'+cat).classList.add('active');
+  }
+  applyFilters();
+}
+
+// ─── QUADRANT CHART (replaced by summary cards) ─────────────────────────────
+function drawQuadrant() {
+  // No-op: quadrant visualization replaced by summary cards above the table
+}
+
+// ─── SEGMENT CHART ───────────────────────────────────────────────────────────
+function getSegment(page) {
+  // Dynamic segmentation: extract first meaningful path segment
+  const parts = page.split('/').filter(Boolean);
+  if (parts.length === 0) return 'Accueil';
+  const first = parts[0].toLowerCase();
+  // If the first segment looks like a known pattern, use it
+  // Otherwise, capitalize and return it
+  return first.charAt(0).toUpperCase() + first.slice(1);
+}
+
+function drawSegments() {
+  const container = document.getElementById('seg-bars');
+  const totalV1 = allPages.reduce((s,p) => s + p.vues1, 0);
+  const threshold = totalV1 * 0.01; // 1% du trafic total
+
+  const segs = {};
+  allPages.forEach(p => {
+    const s = getSegment(p.page);
+    if (!segs[s]) segs[s] = { v1:0, v2:0, e1:0, e2:0, n:0 };
+    segs[s].v1 += p.vues1; segs[s].v2 += p.vues2;
+    segs[s].e1 += p.evt1; segs[s].e2 += p.evt2; segs[s].n++;
+  });
+
+  // Split into significant sections and "Autres"
+  const significant = [];
+  const autres = { v1:0, v2:0, e1:0, e2:0, n:0, sections:0 };
+  Object.entries(segs).sort((a,b) => b[1].v1 - a[1].v1).forEach(([name, d]) => {
+    if (d.v1 >= threshold && significant.length < 10) {
+      significant.push([name, d]);
+    } else {
+      autres.v1 += d.v1; autres.v2 += d.v2;
+      autres.e1 += d.e1; autres.e2 += d.e2;
+      autres.n += d.n; autres.sections++;
+    }
+  });
+  if (autres.sections > 0) significant.push(['Autres (' + autres.sections + ')', autres]);
+
+  const maxV1 = Math.max(...significant.map(([,v]) => v.v1), 1);
+  document.getElementById('seg-count').textContent = significant.length;
+
+  let html = `<div class="seg-header"><span>Section</span><span>Pages</span><span>Vues P1</span><span></span><span>Δ Trafic</span><span>Δ Evt</span></div>`;
+
+  html += significant.map(([name, d]) => {
+    const dv = d.v1 > 0 ? ((d.v2 - d.v1) / d.v1 * 100) : 0;
+    const de = d.e1 > 0 ? ((d.e2 - d.e1) / d.e1 * 100) : (d.e2 > 0 ? null : 0);
+    const barW = Math.round(d.v1 / maxV1 * 100);
+    const barColor = dv < -10 ? 'var(--red)' : dv > 10 ? 'var(--green)' : 'var(--muted)';
+    const dvStr = dv === 0 && d.v1 === 0 ? '—' : (dv >= 0 ? '+' : '') + Math.round(dv) + '%';
+    const deStr = de === null ? `0→${d.e2}` : (de === 0 && d.e1 === 0 ? '—' : (de >= 0 ? '+' : '') + Math.round(de) + '%');
+    const dvClass = dv < 0 ? 'val-down' : dv > 0 ? 'val-up' : 'val-neu';
+    const deClass = de !== null && de < 0 ? 'val-down' : de !== null && de > 0 ? 'val-up' : 'val-neu';
+
+    return `<div class="seg-row">
+      <span class="seg-name" title="${name}">${name}</span>
+      <span class="seg-meta">${d.n}</span>
+      <span class="seg-meta">${fmt(d.v1)}</span>
+      <div class="seg-bar-outer"><div class="seg-bar-inner" style="width:${barW}%;background:${barColor}"></div></div>
+      <span class="seg-val ${dvClass}">${dvStr}</span>
+      <span class="seg-val ${deClass}">${deStr}</span>
+    </div>`;
+  }).join('');
+
+  container.innerHTML = html;
+}
+
+// ─── ALERTS ──────────────────────────────────────────────────────────────────
+function drawAlerts() {
+  const list = document.getElementById('alerts-list');
+  const alerts = [];
+
+  // Rule definitions (also used for legend)
+  const RULES = {
+    crash:     { icon:'📉', label:'Effondrement trafic',       desc:'Vues P1 ≥ 500 et Δ trafic ≤ -60%' },
+    evtZero:   { icon:'🚨', label:'Événement tombé à zéro',    desc:'Evt P1 ≥ 5, Evt P2 = 0, page encore visitée' },
+    ctaBroken: { icon:'⚠️', label:'CTA possiblement cassé',     desc:'Δ trafic entre -20% et +20%, Δ evt ≤ -60%, Evt P1 ≥ 5' },
+    ctrLoss:   { icon:'💡', label:'Fort CTR + perte de trafic', desc:'Conv. P1 ≥ 2%, Δ trafic ≤ -30%, Vues P1 ≥ 200' }
+  };
+
+  allPages.forEach(p => {
+    const loss = Math.max(0, p.vues1 - p.vues2);
+
+    // Rule: crash
+    if (p.var_v !== null && p.var_v < -60 && p.vues1 >= 500) {
+      alerts.push({ rule:'crash', type:'critique', page:p.page,
+        detail:`${fmt(p.vues1)} → ${fmt(p.vues2)} vues`,
+        tag:`Δ trafic ${Math.round(p.var_v)}% · ${fmt(loss)} vues perdues`,
+        impact: loss });
+    }
+    // Rule: evtZero
+    if (p.evt2 === 0 && p.evt1 >= 5 && p.vues2 >= 20) {
+      alerts.push({ rule:'evtZero', type:'critique', page:p.page,
+        detail:`${fmt(p.evt1)} clics → 0, page encore à ${fmt(p.vues2)} vues`,
+        tag:`evt ${p.evt1}→0 · vues P2 = ${fmt(p.vues2)}`,
+        impact: p.evt1 });
+    }
+    // Rule: ctaBroken
+    if (p.var_v !== null && Math.abs(p.var_v) < 20 && p.var_e !== null && isFinite(p.var_e) && p.var_e < -60 && p.evt1 >= 5) {
+      alerts.push({ rule:'ctaBroken', type:'cta', page:p.page,
+        detail:`Trafic ${fmtDelta(p.var_v, p.vues1, p.vues2)}, événement ${fmtDelta(p.var_e, p.evt1, p.evt2)}`,
+        tag:`Δ trafic ${Math.round(p.var_v)}% · Δ evt ${Math.round(p.var_e)}%`,
+        impact: p.evt1 - p.evt2 });
+    }
+    // Rule: ctrLoss
+    if (p.ctr1 >= 2 && p.var_v !== null && p.var_v < -30 && p.vues1 >= 200 && p.evt1 >= 3) {
+      alerts.push({ rule:'ctrLoss', type:'cta', page:p.page,
+        detail:`CTR ${p.ctr1.toFixed(1)}%, ${fmt(loss)} vues perdues`,
+        tag:`CTR ${p.ctr1.toFixed(1)}% · Δ trafic ${Math.round(p.var_v)}%`,
+        impact: loss * p.ctr1 / 100 });
+    }
+  });
+
+  // Dedupe by page (keep highest impact)
+  const seen = {};
+  const deduped = [];
+  alerts.sort((a,b) => b.impact - a.impact);
+  alerts.forEach(a => {
+    if (!seen[a.page]) { seen[a.page] = true; deduped.push(a); }
+  });
+
+  // Figure out which rules actually fired
+  const firedRules = [...new Set(deduped.map(a => a.rule))];
+
+  document.getElementById('alert-count').textContent = deduped.length;
+
+  if (!deduped.length) {
+    list.innerHTML = `<div class="empty">Aucune alerte détectée.</div>`;
+    return;
+  }
+
+  // Legend showing only rules that actually triggered
+  let legendHtml = `<div class="alert-legend">`;
+  firedRules.forEach(r => {
+    const rule = RULES[r];
+    legendHtml += `<div class="alert-legend-item"><span class="al-icon">${rule.icon}</span> <b>${rule.label}</b> — ${rule.desc}</div>`;
+  });
+  legendHtml += `</div>`;
+
+  const itemsHtml = deduped.slice(0,8).map(a => {
+    const rule = RULES[a.rule];
+    return `<div class="alert-item">
+      <div class="alert-icon ${a.type}">${rule.icon}</div>
+      <div class="alert-body">
+        <div class="alert-title">${rule.label}</div>
+        <div class="alert-url" title="${a.page}">${a.page}</div>
+        <div class="alert-detail">${a.detail}</div>
+        <span class="alert-rule">${a.tag}</span>
+      </div>
+      <div class="alert-impact ${a.type === 'critique' ? 'val-down' : 'val-neu'}">${a.impact >= 1 ? '-' + fmt(Math.round(a.impact)) : ''}</div>
+    </div>`;
+  }).join('');
+
+  list.innerHTML = legendHtml + itemsHtml;
+}
+
+// ─── EXPORT ──────────────────────────────────────────────────────────────────
+function exportCSV() { exportData(filtered, 'ga4-priorites-filtre.csv'); }
+function exportAll() { exportData(allPages, 'ga4-priorites-complet.csv'); }
+
+function exportData(data, filename) {
+  function cleanName(raw) { return raw.replace(/_nbr$/i, '').replace(/_/g, ' '); }
+
+  const header = ['Rang','URL','Score','Quadrant','Vues P1','Vues P2','Delta Trafic %'];
+  detectedEvents.forEach(e => {
+    const n = cleanName(e.name);
+    header.push(n+' P1', n+' P2', 'Delta '+n+' %');
+  });
+  header.push('Conv P1 %','Conv P2 %','Impact Vues','Impact Evt');
+
+  const rows = data.map(p => {
+    const row = [p.rank ?? '', p.page, p.score, catLabel(p.category), p.vues1, p.vues2,
+      p.var_v !== null ? p.var_v.toFixed(1) : ''];
+    (p.events || []).forEach(e => {
+      const v = e.p1 > 0 ? ((e.p2 - e.p1) / e.p1 * 100).toFixed(1) : (e.p2 > 0 ? 'new' : '');
+      row.push(e.p1, e.p2, v);
+    });
+    if (!p.events || p.events.length === 0) {
+      row.push(p.evt1, p.evt2, p.var_e !== null && isFinite(p.var_e) ? p.var_e.toFixed(1) : '');
+    }
+    row.push(p.ctr1.toFixed(2), p.ctr2.toFixed(2), p.impact_v, p.impact_e);
+    return row;
+  });
+
+  const csv = [header, ...rows].map(r => r.map(v => `"${v}"`).join(',')).join('\n');
+  try {
+    const blob = new Blob(['\uFEFF'+csv], { type:'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    toast('Export téléchargé !');
+  } catch(e) {
+    const encoded = encodeURIComponent('\uFEFF'+csv);
+    window.open('data:text/csv;charset=utf-8,' + encoded);
+    toast('Export ouvert dans un nouvel onglet');
+  }
+}
+
+// ─── UTILS ───────────────────────────────────────────────────────────────────
+function colIndex(letter) {
+  letter = (letter || 'A').toUpperCase().trim();
+  let n = 0;
+  for (let i = 0; i < letter.length; i++) n = n * 26 + letter.charCodeAt(i) - 64;
+  return n - 1;
+}
+function safeMax(arr, fallback = 0) {
+  let m = fallback;
+  for (let i = 0; i < arr.length; i++) { if (arr[i] > m) m = arr[i]; }
+  return m;
+}
+function str(v) { if (v === null || v === undefined) return ''; return String(v).replace(/'/g,'').trim(); }
+function toNum(v) {
+  if (v === null || v === undefined) return 0;
+  if (typeof v === 'number') return v;
+  const s = String(v).replace(/\s/g,'').replace(',','.').replace(/[^\d.\-]/g,'');
+  return parseFloat(s) || 0;
+}
+function fmt(n) { if (!n && n !== 0) return '—'; return Math.round(n).toLocaleString('fr-FR'); }
+function fmtPct(n) {
+  if (n === null || n === undefined) return '—';
+  if (!isFinite(n)) return '—';
+  return (n >= 0 ? '+' : '') + n.toFixed(1) + '%';
+}
+function fmtDelta(varPct, val1, val2) {
+  if (varPct === null || varPct === undefined) return '—';
+  if (!isFinite(varPct)) return `${fmt(val1)} → ${fmt(val2)}`;
+  return (varPct >= 0 ? '+' : '') + varPct.toFixed(1) + '%';
+}
+function pctClass(n) { if (n === null || !isFinite(n)) return 'val-neu'; return n < 0 ? 'val-down' : 'val-up'; }
+function catLabel(c) { return { critique:'Critique', cta:'CTA à revoir', seo:'SEO', succes:'Succès' }[c] ?? c; }
+function setDelta(id, pct) {
+  const el = document.getElementById(id);
+  el.textContent = (pct >= 0 ? '▲ +' : '▼ ') + pct.toFixed(1) + '%';
+  el.className = 'kpi-delta ' + (pct >= 0 ? 'delta-up' : 'delta-down');
+}
+function showLoading() { document.getElementById('loading').style.display = 'flex'; }
+function hideLoading() { document.getElementById('loading').style.display = 'none'; }
+function resetApp() {
+  // Réinitialiser tout l'état
+  allPages = []; allPagesUnfiltered = []; filtered = [];
+  detectedEvents = [];
+  globalTotals = { v1: null, v2: null, e1: null, e2: null };
+  currentFilter = 'all'; currentSort = 'score'; sortDir = -1; topN = 100;
+
+  // Détruire les charts pour qu'ils puissent être recréés proprement
+  if (quadrantChart) { quadrantChart.destroy(); quadrantChart = null; }
+  if (segChart) { segChart.destroy(); segChart = null; }
+
+  // Réinitialiser le file input (remplacer le nœud pour forcer le reset navigateur)
+  const oldInput = document.getElementById('file-input');
+  const newInput = oldInput.cloneNode(true);
+  oldInput.parentNode.replaceChild(newInput, oldInput);
+  newInput.addEventListener('change', e => { if (e.target.files[0]) processFile(e.target.files[0]); });
+
+  document.getElementById('drop-screen').style.display = 'flex';
+  document.getElementById('dashboard').style.display = 'none';
+  document.getElementById('detection-summary').style.display = 'none';
+  document.querySelector('.header-meta').textContent = 'Analyse comparative GA4';
+}
+function toast(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = msg; t.classList.add('show');
+  setTimeout(() => t.classList.remove('show'), 2800);
+}
+</script>
+</body>
+</html>
