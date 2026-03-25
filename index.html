@@ -676,6 +676,30 @@ function parseGA4Export(raw, filename) {
     return;
   }
 
+  // ── Ensure P1 = older period, P2 = newer period ──────────────────────────
+  // GA4 can export periods in either order. Parse dates to detect and swap.
+  function parsePeriodDate(label) {
+    const months = {'jan':0,'fev':1,'fév':1,'mar':2,'avr':3,'mai':4,'juin':5,'juil':6,'jul':6,'aou':7,'aoû':7,'sep':8,'oct':9,'nov':10,'dec':11,'déc':11};
+    const l = label.toLowerCase();
+    const yearMatch = l.match(/(\d{4})/);
+    const year = yearMatch ? parseInt(yearMatch[1]) : 2025;
+    for (const [m, idx] of Object.entries(months)) {
+      if (l.includes(m)) return new Date(year, idx, 1);
+    }
+    return null;
+  }
+
+  const d1 = parsePeriodDate(period1Label);
+  const d2 = parsePeriodDate(period2Label);
+  let swapped = false;
+  if (d1 && d2 && d1 > d2) {
+    // P1 is more recent than P2 — swap everything
+    swapped = true;
+    [period1Label, period2Label] = [period2Label, period1Label];
+    [globalTotals.v1, globalTotals.v2] = [globalTotals.v2, globalTotals.v1];
+    [globalTotals.e1, globalTotals.e2] = [globalTotals.e2, globalTotals.e1];
+  }
+
   // ── Parse pages with ALL event columns ────────────────────────────────────
   const pages = [];
   let i = startRow;
@@ -689,9 +713,13 @@ function parseGA4Export(raw, filename) {
     const isVariation = urlVal.startsWith('/') && labelCol.toLowerCase().includes('variation');
 
     if (isVariation) {
-      const rowP1 = raw[i + 1];
-      const rowP2 = raw[i + 2];
-      if (!rowP1 || !rowP2) { i++; continue; }
+      const rowA = raw[i + 1]; // first data row in file
+      const rowB = raw[i + 2]; // second data row in file
+      if (!rowA || !rowB) { i++; continue; }
+
+      // If swapped, rowA is the newer period and rowB is the older
+      const rowP1 = swapped ? rowB : rowA;
+      const rowP2 = swapped ? rowA : rowB;
 
       const vues1 = toNum(rowP1[colVues]);
       const vues2 = toNum(rowP2[colVues]);
