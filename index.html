@@ -260,12 +260,13 @@ input[type=range] { width: 100%; accent-color: var(--accent); cursor: pointer; }
 <!-- DROP SCREEN -->
 <div id="drop-screen">
   <div class="drop-card" id="drop-zone">
-    <input type="file" id="file-input" accept=".xlsx">
+    <input type="file" id="file-input" accept=".xlsx" multiple>
     <div class="drop-icon">⬆</div>
     <div class="drop-title">Dépose ton export GA4</div>
-    <div class="drop-sub">Format libre GA4 avec comparaison de dates<br>Détection automatique des colonnes et événements</div>
+    <div class="drop-sub">1 fichier complet ou 2 fichiers à fusionner (vues + événement)<br>Format libre GA4 avec comparaison de dates</div>
     <div class="drop-formats">
       <span class="pill accent">.xlsx</span>
+      <span class="pill" style="color:var(--muted2)">1 ou 2 fichiers</span>
     </div>
   </div>
 
@@ -457,38 +458,270 @@ dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classL
 dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragging'));
 dropZone.addEventListener('drop', e => {
   e.preventDefault(); dropZone.classList.remove('dragging');
-  const f = e.dataTransfer.files[0];
-  if (f) processFile(f);
+  const files = [...e.dataTransfer.files].filter(f => f.name.endsWith('.xlsx'));
+  if (files.length === 1) processFile(files[0]);
+  else if (files.length === 2) processTwoFiles(files[0], files[1]);
+  else if (files.length > 2) toast('Maximum 2 fichiers');
 });
-fileInput.addEventListener('change', e => { if (e.target.files[0]) processFile(e.target.files[0]); });
+fileInput.addEventListener('change', e => {
+  const files = [...e.target.files];
+  if (files.length === 1) processFile(files[0]);
+  else if (files.length === 2) processTwoFiles(files[0], files[1]);
+});
+
+function readXlsx(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = e => {
+      try {
+        const data = new Uint8Array(e.target.result);
+        const wb = XLSX.read(data, { type: 'array' });
+        const ws = wb.Sheets[wb.SheetNames[0]];
+        resolve(XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: null }));
+      } catch(err) { reject(err); }
+    };
+    reader.onerror = () => reject(new Error('Lecture échouée'));
+    reader.readAsArrayBuffer(file);
+  });
+}
 
 function processFile(file) {
   if (quadrantChart) { quadrantChart.destroy(); quadrantChart = null; }
   if (segChart)      { segChart.destroy();      segChart = null; }
   showLoading();
-  const reader = new FileReader();
-  reader.onload = e => {
-    try {
-      const data = new Uint8Array(e.target.result);
-      const wb  = XLSX.read(data, { type: 'array' });
-      const ws  = wb.Sheets[wb.SheetNames[0]];
-      const raw = XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: null });
-      lastRaw = raw;
-      parseGA4Export(raw, file.name);
-    } catch(err) {
-      hideLoading();
-      toast('Erreur de lecture : ' + err.message);
+  readXlsx(file).then(raw => {
+    lastRaw = raw;
+    parseGA4Export(raw, file.name);
+  }).catch(err => {
+    hideLoading();
+    toast('Erreur de lecture : ' + err.message);
+  });
+}
+
+function processTwoFiles(fileA, fileB) {
+  if (quadrantChart) { quadrantChart.destroy(); quadrantChart = null; }
+  if (segChart)      { segChart.destroy();      segChart = null; }
+  showLoading();
+  Promise.all([readXlsx(fileA), readXlsx(fileB)]).then(([rawA, rawB]) => {
+    lastRaw = rawA;
+    mergeAndParse(rawA, rawB, fileA.name + ' + ' + fileB.name);
+  }).catch(err => {
+    hideLoading();
+    toast('Erreur de lecture : ' + err.message);
+  });
+}
+
+// ─── MERGE TWO FILES ─────────────────────────────────────────────────────────
+function mergeAndParse(rawA, rawB, filename) {
+  const detA = detectFormat(rawA);
+  const detB = detectFormat(rawB);
+  if (!detA || !detB) {
+    hideLoading();
+    toast('Impossible de détecter le format d\'un des deux fichiers.');
+    return;
+  }
+
+  function clean(v) {
+    if (v === null || v === undefined) return '';
+    return String(v).replace(/'/g, '').replace(/\u00a0/g, ' ').replace(/\u202f/g, ' ').replace(/\u2013/g, '-').replace(/\u2014/g, '-').trim();
+  }
+
+  // Determine which file has events and which is vues-only (or both have different events)
+  const aHasEvts = detA.allEvtCols.length > 0;
+  const bHasEvts = detB.allEvtCols.length > 0;
+
+  // Parse both files into page maps: { url -> { vues1, vues2, events: [{name, p1, p2}] } }
+  function parseToMap(raw, det) {
+    const { format, colUrl, colVues, colComp, allEvtCols, headerRow } = det;
+    const map = {};
+    let period1Label = '', period2Label = '';
+    let totV1 = null, totV2 = null;
+
+    // ── FLAT FORMAT: single period, one value per row ────────────────────
+    if (format === 'flat') {
+      // Extract date range from comment row (e.g. "# 20260301-20260322")
+      for (let r = 0; r < Math.min(raw.length, 6); r++) {
+        const c0 = clean(raw[r]?.[0] ?? '');
+        const dm = c0.match(/#\s*(\d{8})(?:-(\d{8}))?/);
+        if (dm) {
+          const d = dm[1];
+          period1Label = d.substring(6,8)+'/'+d.substring(4,6)+'/'+d.substring(0,4);
+          if (dm[2]) {
+            const d2 = dm[2];
+            period1Label += ' - ' + d2.substring(6,8)+'/'+d2.substring(4,6)+'/'+d2.substring(0,4);
+          }
+        }
+      }
+
+      // Total from row after header (first non-page row)
+      const totRow = raw[headerRow + 1];
+      if (totRow) {
+        if (colVues >= 0) totV1 = toNum(totRow[colVues]);
+      }
+
+      // Parse data: starts right after header (or after total row)
+      const dataStart = headerRow + (totRow && clean(totRow[colUrl] ?? '') === '' ? 2 : 1);
+      for (let r = dataStart; r < raw.length; r++) {
+        const row = raw[r]; if (!row) continue;
+        const urlVal = clean(row[colUrl]);
+        if (!urlVal || !urlVal.startsWith('/')) continue;
+
+        const v = colVues >= 0 ? toNum(row[colVues]) : 0;
+        const evts = allEvtCols.map(ec => ({ name: ec.name, p1: toNum(row[ec.col]), p2: 0 }));
+
+        if (map[urlVal]) {
+          map[urlVal].vues1 = Math.max(map[urlVal].vues1, v);
+          evts.forEach((ev, idx) => {
+            if (map[urlVal].events[idx]) map[urlVal].events[idx].p1 += ev.p1;
+          });
+        } else {
+          map[urlVal] = { vues1: v, vues2: 0, events: evts };
+        }
+      }
+      return { map, period1Label, period2Label, totV1, totV2, evtCols: allEvtCols, isFlat: true };
     }
+
+    // ── COMPARISON FORMAT: P1/P2 with Variation rows ─────────────────────
+    let startRow = -1;
+    const metricCol = colVues >= 0 ? colVues : (allEvtCols.length > 0 ? allEvtCols[0].col : -1);
+
+    for (let r = headerRow + 1; r < Math.min(raw.length, headerRow + 25); r++) {
+      const row = raw[r]; if (!row) continue;
+      const c0 = clean(row[colUrl]);
+      const cc = clean(row[colComp] ?? '');
+      if (!c0 && cc && metricCol >= 0 && toNum(row[metricCol]) > 50) {
+        const lbl = cc.toLowerCase();
+        const hasMonth = ['jan','fev','fév','mar','avr','mai','juin','juil','aou','aoû','sep','oct','nov','dec','déc'].some(m => lbl.includes(m));
+        if (hasMonth) {
+          if (totV1 === null) { totV1 = colVues >= 0 ? toNum(row[colVues]) : 0; period1Label = cc.replace(/^['"]|['"]$/g,'').trim(); }
+          else if (totV2 === null) { totV2 = colVues >= 0 ? toNum(row[colVues]) : 0; period2Label = cc.replace(/^['"]|['"]$/g,'').trim(); }
+        }
+      }
+      if (c0.startsWith('/') && cc.toLowerCase().includes('variation') && startRow === -1) startRow = r;
+    }
+    if (startRow === -1) {
+      for (let r = headerRow + 1; r < raw.length; r++) {
+        const row = raw[r]; if (!row) continue;
+        if (clean(row[colUrl]).startsWith('/') && clean(row[colComp]??'').toLowerCase().includes('variation')) { startRow = r; break; }
+      }
+    }
+
+    function parsePeriodDate(label) {
+      const months = {'jan':0,'fev':1,'fév':1,'mar':2,'avr':3,'mai':4,'juin':5,'juil':6,'jul':6,'aou':7,'aoû':7,'sep':8,'oct':9,'nov':10,'dec':11,'déc':11};
+      const l = label.toLowerCase(); const ym = l.match(/(\d{4})/); const year = ym ? parseInt(ym[1]) : 2025;
+      for (const [m, idx] of Object.entries(months)) { if (l.includes(m)) return new Date(year, idx, 1); }
+      return null;
+    }
+    const d1 = parsePeriodDate(period1Label), d2 = parsePeriodDate(period2Label);
+    const swapped = d1 && d2 && d1 > d2;
+    if (swapped) { [period1Label, period2Label] = [period2Label, period1Label]; [totV1, totV2] = [totV2, totV1]; }
+
+    if (startRow === -1) return { map, period1Label, period2Label, totV1, totV2, evtCols: allEvtCols };
+    let i = startRow;
+    while (i < raw.length) {
+      const row = raw[i]; if (!row) { i++; continue; }
+      const urlVal = clean(row[colUrl]);
+      const cc = clean(row[colComp] ?? '');
+      if (urlVal.startsWith('/') && cc.toLowerCase().includes('variation')) {
+        const rowA = raw[i+1], rowB = raw[i+2];
+        if (!rowA || !rowB) { i++; continue; }
+        const rowP1 = swapped ? rowB : rowA;
+        const rowP2 = swapped ? rowA : rowB;
+        const v1 = colVues >= 0 ? toNum(rowP1[colVues]) : 0;
+        const v2 = colVues >= 0 ? toNum(rowP2[colVues]) : 0;
+        const evts = allEvtCols.map(ec => ({ name: ec.name, p1: toNum(rowP1[ec.col]), p2: toNum(rowP2[ec.col]) }));
+
+        // Aggregate duplicates (same URL can appear multiple times with different dimensions like link_url)
+        if (map[urlVal]) {
+          map[urlVal].vues1 = Math.max(map[urlVal].vues1, v1); // vues should be same, take max
+          map[urlVal].vues2 = Math.max(map[urlVal].vues2, v2);
+          evts.forEach((ev, idx) => {
+            if (map[urlVal].events[idx]) {
+              map[urlVal].events[idx].p1 += ev.p1;
+              map[urlVal].events[idx].p2 += ev.p2;
+            }
+          });
+        } else {
+          map[urlVal] = { vues1: v1, vues2: v2, events: evts };
+        }
+        i += 3;
+      } else { i++; }
+    }
+    return { map, period1Label, period2Label, totV1, totV2, evtCols: allEvtCols, isFlat: false };
+  }
+
+  const resA = parseToMap(rawA, detA);
+  const resB = parseToMap(rawB, detB);
+  const bothFlat = resA.isFlat && resB.isFlat;
+
+  // Use periods from whichever file has them
+  let period1Label = resA.period1Label || resB.period1Label || 'Période unique';
+  let period2Label = resA.period2Label || resB.period2Label || '';
+  if (bothFlat) period2Label = ''; // no P2 for flat
+  const siteName = detA.siteName || detB.siteName || '';
+
+  // Merge: combine all URLs, merge events from both files
+  const allUrls = new Set([...Object.keys(resA.map), ...Object.keys(resB.map)]);
+  const mergedEvtCols = [];
+  // Collect event names from both files (deduplicated)
+  const seenEvtNames = new Set();
+  [...resA.evtCols, ...resB.evtCols].forEach(ec => {
+    if (!seenEvtNames.has(ec.name)) { seenEvtNames.add(ec.name); mergedEvtCols.push(ec); }
+  });
+
+  detectedEvents = mergedEvtCols;
+  evtName = mergedEvtCols.map(e => e.name).join(' + ');
+  document.getElementById('cfg-evt-name').value = evtName;
+
+  const pages = [];
+  allUrls.forEach(url => {
+    const a = resA.map[url] || { vues1: 0, vues2: 0, events: [] };
+    const b = resB.map[url] || { vues1: 0, vues2: 0, events: [] };
+
+    // Vues: take from whichever has them (prefer non-zero)
+    const vues1 = a.vues1 || b.vues1;
+    const vues2 = a.vues2 || b.vues2;
+
+    // Merge events: combine from both sources
+    const events = [];
+    mergedEvtCols.forEach(ec => {
+      // Look in A's events, then B's events
+      const fromA = a.events.find(e => e.name === ec.name);
+      const fromB = b.events.find(e => e.name === ec.name);
+      events.push({ name: ec.name, p1: (fromA?.p1 ?? 0) + (fromB?.p1 ?? 0), p2: (fromA?.p2 ?? 0) + (fromB?.p2 ?? 0) });
+    });
+
+    const evt1 = events.reduce((s, e) => s + e.p1, 0);
+    const evt2 = events.reduce((s, e) => s + e.p2, 0);
+    const var_v = vues1 > 0 ? (vues2 - vues1) / vues1 * 100 : null;
+    const var_e = evt1 > 0 ? (evt2 - evt1) / evt1 * 100 : (evt2 > 0 ? Infinity : null);
+    const ctr1 = vues1 > 0 ? evt1 / vues1 * 100 : 0;
+    const ctr2 = vues2 > 0 ? evt2 / vues2 * 100 : 0;
+
+    pages.push({ page: url, vues1, vues2, evt1, evt2, events, var_v, var_e, ctr1, ctr2,
+      impact_v: vues1 - vues2, impact_e: evt1 - evt2, score: 0 });
+  });
+
+  allPagesUnfiltered = pages;
+
+  // Global totals
+  globalTotals = {
+    v1: resA.totV1 || resB.totV1 || pages.reduce((s,p) => s + p.vues1, 0),
+    v2: resA.totV2 || resB.totV2 || pages.reduce((s,p) => s + p.vues2, 0),
+    e1: pages.reduce((s,p) => s + p.evt1, 0),
+    e2: pages.reduce((s,p) => s + p.evt2, 0)
   };
-  reader.readAsArrayBuffer(file);
+
+  const minVues = parseInt(document.getElementById('cfg-min-vues').value) || 0;
+  allPages = minVues > 0 ? pages.filter(p => p.vues1 >= minVues || p.vues2 >= minVues) : pages;
+  computeScores();
+  updateDashboard(filename, period1Label, period2Label, siteName);
+  hideLoading();
 }
 
 // ─── AUTO-DETECT & PARSE GA4 FORMAT LIBRE ────────────────────────────────────
 
 function detectFormat(raw) {
-  // Returns { format, colUrl, colVues, colEvt, colM3, evtName, siteName, headerRow, totalsCols }
-  // format: 'simple' (5-col) or 'multi' (9+ col with monthly breakdown)
-
   function clean(v) {
     if (v === null || v === undefined) return '';
     return String(v).replace(/'/g, '').replace(/\u00a0/g, ' ').replace(/\u202f/g, ' ').replace(/\u2013/g, '-').replace(/\u2014/g, '-').trim();
@@ -496,22 +729,20 @@ function detectFormat(raw) {
 
   let siteName = '';
   let headerRow = -1;
-  let colUrl = 0, colVues = -1, colEvt = -1, colM3 = null;
+  let colUrl = 0, colVues = -1, colEvt = -1, colComp = -1;
   let evtName = 'Événement';
   let format = 'simple';
-  let totalsCols = null; // for multi format: { vues, evt }
 
   // ── Pass 1: scan comment/metadata lines ──────────────────────────────────
   for (let r = 0; r < Math.min(raw.length, 10); r++) {
     const row = raw[r];
     if (!row) continue;
     const c0 = clean(row[0]);
-    // Extract site name from comment like "# eau.selectra.info - GA4"
     const siteMatch = c0.match(/^#?\s*([a-z0-9._-]+\.[a-z]{2,})\s*[-–]\s*GA4/i);
     if (siteMatch) siteName = siteMatch[1];
   }
 
-  // ── Pass 2: find the header row with "Chemin de la page" and metric names ──
+  // ── Pass 2: find the header row with "Chemin de la page" ─────────────────
   for (let r = 0; r < Math.min(raw.length, 15); r++) {
     const row = raw[r];
     if (!row) continue;
@@ -526,16 +757,11 @@ function detectFormat(raw) {
     if (headerRow >= 0) break;
   }
 
-  if (headerRow === -1) {
-    return null; // can't detect
-  }
+  if (headerRow === -1) return null;
 
   const hRow = raw[headerRow];
 
-  // ── Pass 3: detect columns ───────────────────────────────────────────────
-  // Look for "Vues" and event name columns in the header row
-  // Also check the row above for "Mois" / "Totaux" indicators (multi format)
-
+  // ── Pass 3: detect ALL columns dynamically ───────────────────────────────
   const rowAbove = headerRow > 0 ? raw[headerRow - 1] : null;
   let hasTotaux = false;
   let totauxStartCol = -1;
@@ -550,58 +776,83 @@ function detectFormat(raw) {
     }
   }
 
-  // Scan header row for metric columns
   const vuesCols = [];
   const evtCols = [];
+  const skipNames = new Set(['comparaison de dates','date comparison','total général','grand total','']);
 
   for (let c = 0; c < hRow.length; c++) {
     const val = clean(hRow[c]).toLowerCase();
+    const rawVal = clean(hRow[c]);
+
+    // Detect "Comparaison de dates" column
+    if (val === 'comparaison de dates' || val === 'date comparison') {
+      colComp = c;
+      continue;
+    }
+
     if (val === 'vues' || val === 'views') {
       vuesCols.push(c);
-    } else if (val && val !== 'comparaison de dates' && val !== 'date comparison'
-               && !val.includes('chemin') && !val.includes('page path')
-               && val !== 'total général' && val !== 'grand total') {
-      // This is likely an event name column
-      evtCols.push({ col: c, name: clean(hRow[c]) });
+    } else if (val.includes('chemin') || val.includes('page path')) {
+      // skip URL col
+    } else if (val && !skipNames.has(val)) {
+      // Any other non-empty col is a metric (event or dimension like link_url)
+      // Skip known dimension columns (non-numeric)
+      if (val === 'link_url' || val === 'link url' || val.includes('url')) {
+        // This is a dimension, not a metric — skip but note it
+      } else {
+        // This is an event metric: could be named "Nombre d'événements", "selectra_tel_link_nbr", etc.
+        evtCols.push({ col: c, name: rawVal });
+      }
     }
   }
 
-  // ── Determine format ────────────────────────────────────────────────────
-  // allEvtCols: the event columns to use for data reading
+  // If colComp not found in header, search for it in data rows (row below header with "Variation")
+  if (colComp === -1) {
+    const testRow = raw[headerRow + 1];
+    if (testRow) {
+      for (let c = 0; c < testRow.length; c++) {
+        if (clean(testRow[c]).toLowerCase().includes('variation')) { colComp = c; break; }
+      }
+    }
+    // Ultimate fallback
+    if (colComp === -1) colComp = 1;
+  }
+
+  // ── Determine format and select event columns ───────────────────────────
   let allEvtCols = [];
 
   if (hasTotaux && vuesCols.length >= 2 && totauxStartCol > 0) {
     format = 'multi';
     const totauxVues = vuesCols.filter(c => c >= totauxStartCol);
     const totauxEvts = evtCols.filter(e => e.col >= totauxStartCol);
-
-    if (totauxVues.length > 0) {
-      colVues = totauxVues[0];
-    }
+    if (totauxVues.length > 0) colVues = totauxVues[0];
     allEvtCols = totauxEvts;
-    if (allEvtCols.length > 0) {
-      colEvt = allEvtCols[0].col;
-      evtName = allEvtCols.map(e => e.name).join(' + ');
-    }
   } else {
     format = 'simple';
-    if (vuesCols.length >= 1) {
-      colVues = vuesCols[0];
-    }
-    // All event columns after Vues
-    const afterVues = evtCols.filter(e => e.col > colVues);
+    if (vuesCols.length >= 1) colVues = vuesCols[0];
+    const afterVues = evtCols.filter(e => colVues >= 0 ? e.col > colVues : true);
     allEvtCols = afterVues.length > 0 ? afterVues : evtCols;
-    if (allEvtCols.length > 0) {
-      colEvt = allEvtCols[0].col;
-      evtName = allEvtCols.map(e => e.name).join(' + ');
-    }
   }
 
-  // Final fallback if detection failed
-  if (colVues === -1) colVues = colUrl + 2;
-  if (colEvt === -1) colEvt = colVues + 1;
+  if (allEvtCols.length > 0) {
+    colEvt = allEvtCols[0].col;
+    evtName = allEvtCols.map(e => e.name).join(' + ');
+  }
 
-  return { format, colUrl, colVues, colEvt, allEvtCols, evtName, siteName, headerRow };
+  if (colVues === -1) colVues = -1; // may not have Vues (event-only file)
+  if (colEvt === -1 && allEvtCols.length === 0) colEvt = -1;
+
+  // Detect flat format: no "Comparaison de dates" column found in header
+  const isFlat = colComp === -1 || (colComp >= 0 && (() => {
+    // Double-check: look for "Variation" in first data rows
+    for (let r = headerRow + 1; r < Math.min(raw.length, headerRow + 5); r++) {
+      if (raw[r] && clean(raw[r][colComp] ?? '').toLowerCase().includes('variation')) return false;
+    }
+    return true;
+  })());
+  if (isFlat) format = 'flat';
+
+  return { format, colUrl, colVues, colEvt, colComp, allEvtCols, evtName, siteName, headerRow };
 }
 
 function parseGA4Export(raw, filename) {
@@ -613,7 +864,7 @@ function parseGA4Export(raw, filename) {
     return;
   }
 
-  const { format, colUrl, colVues, allEvtCols, siteName, headerRow } = detection;
+  const { format, colUrl, colVues, colComp, allEvtCols, siteName, headerRow } = detection;
   detectedEvents = allEvtCols; // store globally for table rendering
   evtName = detection.evtName;
 
@@ -630,8 +881,6 @@ function parseGA4Export(raw, filename) {
   let startRow = -1;
   let period1Label = 'Période 1', period2Label = 'Période 2';
   globalTotals = { v1: null, v2: null, e1: null, e2: null };
-
-  const colComp = 1;
 
   for (let r = headerRow + 1; r < Math.min(raw.length, headerRow + 25); r++) {
     const row = raw[r];
@@ -1410,7 +1659,11 @@ function resetApp() {
   const oldInput = document.getElementById('file-input');
   const newInput = oldInput.cloneNode(true);
   oldInput.parentNode.replaceChild(newInput, oldInput);
-  newInput.addEventListener('change', e => { if (e.target.files[0]) processFile(e.target.files[0]); });
+  newInput.addEventListener('change', e => {
+    const files = [...e.target.files];
+    if (files.length === 1) processFile(files[0]);
+    else if (files.length === 2) processTwoFiles(files[0], files[1]);
+  });
 
   document.getElementById('drop-screen').style.display = 'flex';
   document.getElementById('dashboard').style.display = 'none';
